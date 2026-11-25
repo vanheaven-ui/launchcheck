@@ -63,8 +63,18 @@ const BINARY_EXTENSIONS = new Set([
   "wasm",
 ]);
 
-/** Priority tier 1: first path segment. */
-const PRIORITY_DIRS = new Set(["app", "src", "pages", "lib", "api", "supabase"]);
+/** First path segments that mark application source worth fetching early. */
+const PRIORITY_DIRS = new Set([
+  "app",
+  "src",
+  "pages",
+  "lib",
+  "api",
+  "supabase",
+  "apps",
+  "packages",
+]);
+const CONFIG_FILE_RE = /\.(json|toml|ya?ml|sql)$/;
 
 export type RepoSnapshotOptions = {
   github: GithubClient;
@@ -105,11 +115,20 @@ function isSkippedPath(path: string): boolean {
 
 /** Lower tier number = fetched earlier. */
 function priorityTier(path: string): number {
+  const segments = path.split("/");
   const base = basename(path).toLowerCase();
-  if (base.startsWith(".env") || /\.(json|toml|ya?ml|sql)$/.test(base)) {
+  if (base.startsWith(".env")) {
     return 0;
   }
-  const first = path.split("/")[0]?.toLowerCase() ?? "";
+  // Config files are top priority only near the root (<=2 segments) or under
+  // supabase/, so deep locale/data JSON cannot starve application source.
+  if (
+    CONFIG_FILE_RE.test(base) &&
+    (segments.length <= 2 || segments[0]?.toLowerCase() === "supabase")
+  ) {
+    return 0;
+  }
+  const first = segments[0]?.toLowerCase() ?? "";
   if (PRIORITY_DIRS.has(first)) {
     return 1;
   }
@@ -246,7 +265,7 @@ export async function buildRepoSnapshot(
         const path = queued[index];
         index += 1;
         try {
-          const res = await fetcher(rawFileUrl(owner, repo, treeResult.sha, path));
+          const res = await fetcher(rawFileUrl(owner, repo, info.headSha, path));
           if (!res.ok || res.status >= 400) {
             fetchFailures += 1;
             continue;
@@ -293,7 +312,7 @@ export async function buildRepoSnapshot(
       owner,
       repo,
       defaultBranch: info.defaultBranch,
-      sha: treeResult.sha,
+      sha: info.headSha,
       treeTruncated: treeResult.truncated,
       tree,
       files,

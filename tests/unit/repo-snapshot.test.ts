@@ -268,6 +268,75 @@ describe("buildRepoSnapshot", () => {
     expect(result.snapshot.notes.some((n) => n.includes("could not be fetched"))).toBe(true);
   });
 
+  it("uses the commit sha (headSha) for raw URLs and snapshot.sha, never the tree sha", async () => {
+    const commitSha = "1".repeat(40);
+    const treeSha = "2".repeat(40);
+    const { github, fetcher, fetchedUrls } = createFakeGithub({
+      "acme/app": {
+        files: { "src/a.ts": "x", "src/b.ts": "y" },
+        headSha: commitSha,
+        treeSha,
+      },
+    });
+    const result = await buildRepoSnapshot(REPO_URL, { github, fetcher });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.sha).toBe(commitSha);
+    expect(fetchedUrls.length).toBeGreaterThan(0);
+    for (const url of fetchedUrls) {
+      expect(url).toContain(`/${commitSha}/`);
+      expect(url).not.toContain(treeSha);
+    }
+  });
+
+  it("deep locale JSON cannot starve app source under the 300-file cap", async () => {
+    const files: Record<string, string> = {
+      ".env": "A=1",
+      "package.json": "{}",
+      "supabase/migrations/001_init.sql": "select 1;",
+    };
+    for (let i = 0; i < 50; i++) {
+      files[`app/page${i}.tsx`] = "x";
+    }
+    // 400 deep locale JSON files (depth >= 3): tier 2 under the new rules.
+    for (let i = 0; i < 400; i++) {
+      files[`locales/en/US/msg${i}.json`] = "{}";
+    }
+    const { github, fetcher } = createFakeGithub({ "acme/app": { files } });
+    const result = await buildRepoSnapshot(REPO_URL, { github, fetcher });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.files).toHaveLength(300);
+    const paths = result.snapshot.files.map((f) => f.path);
+    // Every app/ file was fetched.
+    for (let i = 0; i < 50; i++) {
+      expect(paths).toContain(`app/page${i}.tsx`);
+    }
+    // Root env/config and supabase SQL come before all app files.
+    const firstApp = paths.findIndex((p) => p.startsWith("app/"));
+    expect(firstApp).toBeGreaterThan(-1);
+    for (const early of [".env", "package.json", "supabase/migrations/001_init.sql"]) {
+      expect(paths.indexOf(early)).toBeLessThan(firstApp);
+    }
+  }, 30_000);
+
+  it("treats apps/web/src as tier 1 priority ahead of top-level docs", async () => {
+    const { github, fetcher } = createFakeGithub({
+      "acme/app": {
+        files: {
+          "docs/guide.md": "doc",
+          "apps/web/src/index.ts": "code",
+          "notes.txt": "n",
+        },
+      },
+    });
+    const result = await buildRepoSnapshot(REPO_URL, { github, fetcher });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const paths = result.snapshot.files.map((f) => f.path);
+    expect(paths.indexOf("apps/web/src/index.ts")).toBeLessThan(paths.indexOf("docs/guide.md"));
+  });
+
   it("serves file contents through the injected fetcher only", async () => {
     const { github } = createFakeGithub({ "acme/app": { files: { "a.ts": "content-a" } } });
     const seen: string[] = [];

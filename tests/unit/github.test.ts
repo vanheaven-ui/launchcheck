@@ -13,11 +13,17 @@ function octokitError(status: number, message: string, headers: Record<string, s
 
 function fakeOctokit(overrides: {
   getRepo?: (params: Record<string, unknown>) => Promise<unknown>;
+  getBranch?: (params: Record<string, unknown>) => Promise<unknown>;
   getTree?: (params: Record<string, unknown>) => Promise<unknown>;
 }) {
   return {
     rest: {
-      repos: { get: vi.fn(overrides.getRepo ?? (async () => ({ data: {} }))) },
+      repos: {
+        get: vi.fn(overrides.getRepo ?? (async () => ({ data: {} }))),
+        getBranch: vi.fn(
+          overrides.getBranch ?? (async () => ({ data: { commit: { sha: "c".repeat(40) } } })),
+        ),
+      },
       git: { getTree: vi.fn(overrides.getTree ?? (async () => ({ data: {} }))) },
     },
   } as unknown as Octokit;
@@ -36,13 +42,29 @@ describe("createOctokitGithubClient", () => {
     });
     const client = createOctokitGithubClient(TOKEN, octokit);
     const info = await client.getRepo("owner", "repo");
-    expect(info).toEqual({ defaultBranch: "main", isPrivate: false, archived: false });
+    expect(info).toEqual({
+      defaultBranch: "main",
+      isPrivate: false,
+      archived: false,
+      headSha: "c".repeat(40),
+    });
 
     const call = (octokit.rest.repos.get as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(call).toMatchObject({ owner: "owner", repo: "repo" });
     expect((call as { request?: { signal?: AbortSignal } }).request?.signal).toBeInstanceOf(
       AbortSignal,
     );
+
+    // getBranch is called once with the default branch and an abort signal.
+    const branchCall = (octokit.rest.repos.getBranch as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0][0];
+    expect(branchCall).toMatchObject({ owner: "owner", repo: "repo", branch: "main" });
+    expect((branchCall as { request?: { signal?: AbortSignal } }).request?.signal).toBeInstanceOf(
+      AbortSignal,
+    );
+    expect(
+      (octokit.rest.repos.getBranch as unknown as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(1);
   });
 
   it("requests the tree recursively with a 10s abort signal", async () => {
@@ -55,6 +77,7 @@ describe("createOctokitGithubClient", () => {
             { path: "a.ts", type: "blob", size: 10 },
             { path: "src", type: "tree" },
             { path: "sub", type: "commit" },
+            { type: "blob", size: 5 },
           ],
         },
       }),
@@ -93,6 +116,37 @@ describe("createOctokitGithubClient", () => {
     });
     const client = createOctokitGithubClient(TOKEN, octokit);
     await expect(client.getRepo("o", "r")).rejects.toMatchObject({ code: "repo_not_found" });
+    // getBranch must not be called for a private repo.
+    expect(
+      (octokit.rest.repos.getBranch as unknown as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(0);
+  });
+
+  it("maps a getBranch 404 to repo_not_found", async () => {
+    const octokit = fakeOctokit({
+      getRepo: async () => ({ data: REPO_DATA }),
+      getBranch: async () => {
+        throw octokitError(404, "Branch not found");
+      },
+    });
+    const client = createOctokitGithubClient(TOKEN, octokit);
+    await expect(client.getRepo("o", "r")).rejects.toMatchObject({
+      code: "repo_not_found",
+      message: expect.not.stringContaining(TOKEN),
+    });
+  });
+
+  it("maps a getBranch rate-limit error to repo_rate_limited", async () => {
+    const octokit = fakeOctokit({
+      getRepo: async () => ({ data: REPO_DATA }),
+      getBranch: async () => {
+        throw octokitError(429, "You have exceeded a secondary rate limit");
+      },
+    });
+    const client = createOctokitGithubClient(TOKEN, octokit);
+    await expect(client.getRepo("o", "r")).rejects.toMatchObject({
+      code: "repo_rate_limited",
+    });
   });
 
   it("maps 403 with x-ratelimit-remaining 0 to repo_rate_limited", async () => {

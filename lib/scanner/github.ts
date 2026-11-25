@@ -23,6 +23,10 @@ export type RepoInfo = {
   defaultBranch: string;
   isPrivate: boolean;
   archived: boolean;
+  /** SHA of the latest commit on the default branch. raw.githubusercontent.com
+   * and GitHub blob links need a commit sha — the tree sha is a tree object id
+   * and does not resolve there. */
+  headSha: string;
 };
 
 export type TreeEntry = {
@@ -104,10 +108,17 @@ export function createOctokitGithubClient(token?: string, octokit?: Octokit): Gi
         if (data.private) {
           throw new GithubError("repo_not_found", ERROR_MESSAGES.repo_not_found);
         }
+        const branch = await client.rest.repos.getBranch({
+          owner,
+          repo,
+          branch: data.default_branch,
+          request: { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
+        });
         return {
           defaultBranch: data.default_branch,
           isPrivate: data.private,
           archived: data.archived,
+          headSha: branch.data.commit.sha,
         };
       } catch (error) {
         throw toGithubError(error);
@@ -125,7 +136,7 @@ export function createOctokitGithubClient(token?: string, octokit?: Octokit): Gi
         });
         const entries: TreeEntry[] = [];
         for (const item of data.tree) {
-          if (item.type !== "blob" && item.type !== "tree") {
+          if ((item.type !== "blob" && item.type !== "tree") || !item.path) {
             continue;
           }
           entries.push({

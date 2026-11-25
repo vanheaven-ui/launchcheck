@@ -26,11 +26,30 @@ describe("runRepoScan", () => {
 
   it("produces critical findings for the vulnerable fixture repo", async () => {
     const { github, fetcher } = createFakeGithub({
-      "acme/vulnerable-app": { files: vulnerableRepoFiles },
+      "acme/vulnerable-app": {
+        files: vulnerableRepoFiles,
+        headSha: "1".repeat(40),
+        treeSha: "2".repeat(40),
+      },
     });
     const result = await runRepoScan({ repoUrl: VULN_URL, github, fetcher });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+
+    // File-level findings (env.committed, secrets.patterns) link to
+    // blob/<commit-sha>/<path>; repo-level findings (quality.basics without a
+    // path) legitimately use the plain repository URL with no sha.
+    const fileLevel = result.findings.filter(
+      (f) => f.checkId === "repo.env.committed" || f.checkId === "repo.secrets.patterns",
+    );
+    expect(fileLevel.length).toBeGreaterThan(0);
+    for (const finding of fileLevel) {
+      expect(finding.location).toContain(`/blob/${"1".repeat(40)}/`);
+    }
+    // The tree sha must never appear in any location.
+    for (const finding of result.findings) {
+      expect(finding.location ?? "").not.toContain("2".repeat(40));
+    }
 
     const envCommitted = result.findings.find((f) => f.checkId === "repo.env.committed");
     expect(envCommitted).toMatchObject({

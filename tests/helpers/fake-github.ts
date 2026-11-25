@@ -13,6 +13,10 @@ export type FakeRepoSpec = {
   unfetchable?: string[];
   /** Optional per-path size override for the tree entries. */
   sizes?: Record<string, number>;
+  /** Commit sha returned by getRepo (defaults to a fixed fake distinct from the tree sha). */
+  headSha?: string;
+  /** Tree sha returned by getTree (defaults to a fixed fake distinct from the commit sha). */
+  treeSha?: string;
 };
 
 export type FakeGithub = {
@@ -22,7 +26,8 @@ export type FakeGithub = {
   fetchedUrls: string[];
 };
 
-const FAKE_SHA = "0123456789abcdef0123456789abcdef01234567";
+const FAKE_COMMIT_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const FAKE_TREE_SHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 /**
  * In-memory GithubClient + raw-file fetcher backed by the same repo map.
@@ -47,6 +52,7 @@ export function createFakeGithub(repos: Record<string, FakeRepoSpec>): FakeGithu
         defaultBranch: spec.defaultBranch ?? "main",
         isPrivate: spec.isPrivate ?? false,
         archived: spec.archived ?? false,
+        headSha: spec.headSha ?? FAKE_COMMIT_SHA,
       };
     },
     async getTree(owner, repo) {
@@ -63,7 +69,7 @@ export function createFakeGithub(repos: Record<string, FakeRepoSpec>): FakeGithu
         }
       }
       return {
-        sha: FAKE_SHA,
+        sha: spec.treeSha ?? FAKE_TREE_SHA,
         truncated: spec.treeTruncated ?? false,
         entries,
       };
