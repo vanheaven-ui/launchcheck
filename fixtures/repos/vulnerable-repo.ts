@@ -45,7 +45,7 @@ export const vulnerableRepoFiles: Record<string, string> = {
     "// TODO: move this somewhere safe",
     `const serviceRoleKey = "${VULN_SERVICE_JWT}";`,
     "",
-    "export const admin = createClient(process.env.SUPABASE_URL ?? \"\", serviceRoleKey);",
+    'export const admin = createClient(process.env.SUPABASE_URL ?? "", serviceRoleKey);',
     "",
   ].join("\n"),
   "src/utils.ts": "export const add = (a: number, b: number) => a + b;\n",

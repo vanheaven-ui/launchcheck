@@ -16,7 +16,7 @@ import type {
 
 const MAX_FINDINGS = 20;
 /** Paths that look like tests, fixtures, mocks, samples, or docs. */
-const TEST_PATH_RE = /(^|[\/._-])(tests?|spec|fixtures?|mocks?|samples?|docs?)([\/._-]|$)/i;
+const TEST_PATH_RE = /(^|[/._-])(tests?|spec|fixtures?|mocks?|samples?|docs?)([/._-]|$)/i;
 const EXAMPLE_ENV_RE = /\.env\.example$/i;
 
 type SecretCandidate = {

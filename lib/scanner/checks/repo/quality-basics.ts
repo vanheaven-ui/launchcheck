@@ -98,9 +98,7 @@ export const qualityBasicsCheck: RepoCheck = {
     // Lockfile at the root or in any workspace root (a dir containing
     // package.json).
     const packageJsonDirs = new Set(
-      paths
-        .filter((path) => basename(path).toLowerCase() === "package.json")
-        .map(dirName),
+      paths.filter((path) => basename(path).toLowerCase() === "package.json").map(dirName),
     );
     const hasLockfile = paths.some((path) => {
       if (!LOCKFILE_NAMES.has(basename(path).toLowerCase())) {
@@ -163,7 +161,9 @@ export const qualityBasicsCheck: RepoCheck = {
       if (TEST_FILE_RE.test(base)) {
         return true;
       }
-      return segments.slice(0, -1).some((segment) => segment === "__tests__" || segment === "tests");
+      return segments
+        .slice(0, -1)
+        .some((segment) => segment === "__tests__" || segment === "tests");
     });
     const hasTestScript = repo.files.some(
       (file) =>

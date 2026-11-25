@@ -4,15 +4,9 @@
  * checks should produce no security/reliability findings for it.
  */
 export const cleanRepoFiles: Record<string, string> = {
-  ".gitignore": [
-    "node_modules/",
-    "dist/",
-    ".env",
-    "*.env",
-    "!.env.example",
-    ".next/",
-    "",
-  ].join("\n"),
+  ".gitignore": ["node_modules/", "dist/", ".env", "*.env", "!.env.example", ".next/", ""].join(
+    "\n",
+  ),
   ".env.example": [
     "STRIPE_SECRET_KEY=your-stripe-test-key",
     "SUPABASE_URL=https://your-project.supabase.co",
@@ -35,9 +29,9 @@ export const cleanRepoFiles: Record<string, string> = {
     'import { describe, expect, it } from "vitest";',
     'import { greeting } from "./index";',
     "",
-    "describe(\"greeting\", () => {",
-    "  it(\"is a string\", () => {",
-    "    expect(typeof greeting).toBe(\"string\");",
+    'describe("greeting", () => {',
+    '  it("is a string", () => {',
+    '    expect(typeof greeting).toBe("string");',
     "  });",
     "});",
     "",

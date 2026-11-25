@@ -106,10 +106,7 @@ function isSkippedPath(path: string): boolean {
 /** Lower tier number = fetched earlier. */
 function priorityTier(path: string): number {
   const base = basename(path).toLowerCase();
-  if (
-    base.startsWith(".env") ||
-    /\.(json|toml|ya?ml|sql)$/.test(base)
-  ) {
+  if (base.startsWith(".env") || /\.(json|toml|ya?ml|sql)$/.test(base)) {
     return 0;
   }
   const first = path.split("/")[0]?.toLowerCase() ?? "";

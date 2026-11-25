@@ -79,7 +79,7 @@ describe("fixture sites through the real snapshot + full check registry", () => 
 
     // Persisting through the real persistFindings stores no full secret.
     const { db, insertedRows } = mockDb();
-    await persistFindings(db, "scan-fixture", findings);
+    await persistFindings(db, "scan-fixture", findings, { scope: "site" });
     const stored = JSON.stringify(insertedRows);
     for (const secret of FAKE_SECRETS) {
       expect(stored).not.toContain(secret);

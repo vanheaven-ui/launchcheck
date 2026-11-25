@@ -1,4 +1,4 @@
-import { GithubError, type GithubClient } from "@/lib/scanner/github";
+import { type GithubClient, GithubError } from "@/lib/scanner/github";
 import type { Fetcher } from "@/lib/scanner/types";
 import { okResult } from "./fetcher";
 
