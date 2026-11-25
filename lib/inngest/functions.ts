@@ -3,9 +3,12 @@ import { NonRetriableError } from "inngest";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
 import { scans } from "@/lib/db/schema";
+import { getEnv } from "@/lib/env";
 import { inngest } from "@/lib/inngest/client";
 import { productionFetcher } from "@/lib/scanner/fetcher";
+import { createOctokitGithubClient } from "@/lib/scanner/github";
 import { persistFindings } from "@/lib/scanner/persist";
+import { runRepoScan, unreadableRepoFinding } from "@/lib/scanner/scan-repo";
 import { runSiteScan } from "@/lib/scanner/scan-site";
 import { STEP } from "@/lib/scanner/steps";
 import { validateTargetUrl } from "@/lib/scanner/url-validation";
@@ -30,13 +33,14 @@ async function markScanFailed(db: Db, scanId: string) {
 }
 
 /**
- * scan.run — current pipeline (Phase 2A):
- *   validate-and-resolve → mark-running → scan-site (site scans only) → finalize
+ * scan.run — current pipeline (Phase 3A):
+ *   validate-and-resolve → mark-running → scan-site (site scans only)
+ *   → scan-repo (repo scans only) → finalize
  *
  * scan-site builds the site snapshot, runs the registered site checks, and
- * idempotently replaces this scan's findings rows inside ONE step, returning
- * only { findingCount } so step output stays small. Repo checks land in
- * Phase 3; scoring/AI in Phase 4.
+ * scan-repo does the same for repo checks; both persist inside ONE step and
+ * return only { findingCount } so step output stays small. Scoring/AI land
+ * in Phase 4.
  *
  * Failure handling:
  * - Transient errors are retried by Inngest (2 retries). We do NOT mark the
@@ -117,7 +121,34 @@ export const scanRun = inngest.createFunction(
         if (!result.ok) {
           throw new NonRetriableError("site_unreachable");
         }
-        await persistFindings(db, scanId, result.findings);
+        await persistFindings(db, scanId, result.findings, { scope: "site" });
+        return { findingCount: result.findings.length };
+      });
+    }
+
+    // Repo scans: snapshot, check, and persist inside ONE step so the step
+    // output stays small (never return the snapshot or file contents).
+    const repoUrl = resolved.repoUrl;
+    if (repoUrl) {
+      await step.run(STEP.scanRepo, async () => {
+        await setScanStep(db, scanId, STEP.scanRepo);
+        const github = createOctokitGithubClient(getEnv().GITHUB_TOKEN);
+        const result = await runRepoScan({
+          repoUrl,
+          github,
+          fetcher: productionFetcher,
+        });
+        if (!result.ok) {
+          if (resolved.siteUrl) {
+            // `both` mode: the site findings stand; record why the repo failed.
+            await persistFindings(db, scanId, [unreadableRepoFinding(result.reason)], {
+              scope: "repo",
+            });
+            return { findingCount: 1 };
+          }
+          throw new NonRetriableError("repo_unreachable");
+        }
+        await persistFindings(db, scanId, result.findings, { scope: "repo" });
         return { findingCount: result.findings.length };
       });
     }

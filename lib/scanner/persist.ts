@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, like } from "drizzle-orm";
 import type { NeonHttpDatabase } from "drizzle-orm/neon-http";
 import * as schema from "@/lib/db/schema";
 import { scrubSecrets } from "@/lib/scanner/scrub";
@@ -48,15 +48,21 @@ function sanitizeLocation(location: string | undefined): string | null {
   return clean(value, MAX_LOCATION_LENGTH);
 }
 
+/** Which pipeline step's findings a persist call owns. */
+export type PersistScope = "site" | "repo";
+
 /**
- * Idempotently replace a scan's findings in ONE batched request: the delete is
- * scoped to this scan_id and the insert only runs when there are rows. Safe to
- * retry — a retried step never produces duplicates.
+ * Idempotently replace a scan's findings for ONE scope in ONE batched request:
+ * the delete removes only this scan's rows whose check_id starts with
+ * "site." or "repo." (so the scan-site and scan-repo steps never delete each
+ * other's findings), then the insert runs when there are rows. Safe to retry —
+ * a retried step never produces duplicates.
  */
 export async function persistFindings(
   db: Db,
   scanId: string,
   scanFindings: readonly ScanFinding[],
+  options: { scope: PersistScope },
 ): Promise<void> {
   const rows = scanFindings.map((finding) => ({
     scanId,
@@ -69,7 +75,9 @@ export async function persistFindings(
     location: sanitizeLocation(finding.location),
   }));
 
-  const deleteQuery = db.delete(findings).where(eq(findings.scanId, scanId));
+  const deleteQuery = db
+    .delete(findings)
+    .where(and(eq(findings.scanId, scanId), like(findings.checkId, `${options.scope}.%`)));
   if (rows.length > 0) {
     await db.batch([deleteQuery, db.insert(findings).values(rows)]);
   } else {

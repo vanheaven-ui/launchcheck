@@ -8,16 +8,20 @@ export type MockDb = {
   /** Queries passed to each db.batch() call. */
   batches: unknown[][];
   insertedRows: Record<string, unknown>[][];
+  /** WHERE conditions passed to each db.delete().where() call. */
+  deleteWheres: unknown[];
 };
 
 export function mockDb(findingRows: { severity: Severity; title: string }[] = []): MockDb {
   const calls: string[] = [];
   const batches: unknown[][] = [];
   const insertedRows: Record<string, unknown>[][] = [];
+  const deleteWheres: unknown[] = [];
   const db = {
     delete: () => ({
-      where: () => {
+      where: (condition: unknown) => {
         calls.push("delete");
+        deleteWheres.push(condition);
         return { kind: "delete" };
       },
     }),
@@ -43,5 +47,5 @@ export function mockDb(findingRows: { severity: Severity; title: string }[] = []
       }),
     }),
   };
-  return { db: db as unknown as Db, calls, batches, insertedRows };
+  return { db: db as unknown as Db, calls, batches, insertedRows, deleteWheres };
 }

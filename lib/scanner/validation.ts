@@ -51,8 +51,9 @@ const siteUrlField = z
 // GitHub owner: 1-39 chars, alphanumeric or hyphen, no leading/trailing hyphen.
 // Repo: 1-100 chars, starts alphanumeric, then letters/digits/._- ; optional
 // ".git" suffix and a single trailing slash are allowed and ignored.
-const GITHUB_REPO_URL =
-  /^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:\.git)?\/?$/;
+// Capture groups 1 and 2 hold owner and repo for parseRepoUrl.
+export const GITHUB_REPO_URL =
+  /^https:\/\/github\.com\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\/([A-Za-z0-9][A-Za-z0-9._-]{0,99})(?:\.git)?\/?$/;
 
 export const repoUrlField = z
   .string()

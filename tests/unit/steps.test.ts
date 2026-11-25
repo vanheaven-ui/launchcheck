@@ -2,16 +2,31 @@ import { describe, expect, it } from "vitest";
 import { SCAN_STEPS, STEP, stepStates, stepsForMode } from "@/lib/scanner/steps";
 
 const SITE_STEP_IDS = ["queued", STEP.validate, STEP.running, STEP.scanSite, STEP.finalize];
+const REPO_STEP_IDS = ["queued", STEP.validate, STEP.running, STEP.scanRepo, STEP.finalize];
+const BOTH_STEP_IDS = [
+  "queued",
+  STEP.validate,
+  STEP.running,
+  STEP.scanSite,
+  STEP.scanRepo,
+  STEP.finalize,
+];
 const ALWAYS_STEP_IDS = ["queued", STEP.validate, STEP.running, STEP.finalize];
 
 describe("stepsForMode", () => {
-  it("returns the site scan steps for site and both modes", () => {
+  it("returns the site scan steps for site mode", () => {
     expect(stepsForMode("site").map((s) => s.id)).toEqual(SITE_STEP_IDS);
-    expect(stepsForMode("both").map((s) => s.id)).toEqual(SITE_STEP_IDS);
   });
 
-  it("returns only the always steps for repo scans", () => {
-    expect(stepsForMode("repo").map((s) => s.id)).toEqual(ALWAYS_STEP_IDS);
+  it("returns the repo scan steps for repo mode", () => {
+    expect(stepsForMode("repo").map((s) => s.id)).toEqual(REPO_STEP_IDS);
+  });
+
+  it("returns both scan steps for both mode", () => {
+    const steps = stepsForMode("both");
+    expect(steps.map((s) => s.id)).toEqual(BOTH_STEP_IDS);
+    expect(steps.find((s) => s.id === STEP.scanRepo)?.label).toBe("Reading your repository");
+    expect(steps.find((s) => s.id === STEP.scanRepo)?.appliesTo).toBe("repo");
   });
 
   it("returns only the always steps when the mode is missing", () => {

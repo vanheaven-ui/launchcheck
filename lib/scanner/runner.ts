@@ -1,8 +1,17 @@
-import type { Check, RawFinding, ScanContext, ScanFinding } from "@/lib/scanner/types";
+import type { Category, RawFinding, ScanFinding } from "@/lib/scanner/types";
+
+/** Minimal check shape the runner needs; site and repo checks both satisfy it. */
+export type RunnableCheck<Ctx> = {
+  id: string;
+  category: Category;
+  /** Per-check timeout override; the runner default applies when absent. */
+  timeoutMs?: number;
+  run(ctx: Ctx): Promise<RawFinding[]>;
+};
 
 export type CheckResult = {
   checkId: string;
-  category: Check["category"];
+  category: Category;
   finding: RawFinding;
 };
 
@@ -28,7 +37,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-function erroredFinding(check: Check): RawFinding {
+function erroredFinding(check: { id: string; category: Category }): RawFinding {
   return {
     checkId: check.id,
     severity: "info",
@@ -39,13 +48,16 @@ function erroredFinding(check: Check): RawFinding {
 }
 
 /**
- * Run checks in parallel, each isolated by its own timeout. A check that throws
+ * Run checks in parallel, each isolated by their own timeout. A check that throws
  * or times out becomes a single `check_errored` info finding — the runner never
  * throws and one bad check cannot fail the scan.
+ *
+ * Generic over the context type so site checks (ScanContext) and repo checks
+ * (RepoScanContext) share the same runner.
  */
-export async function runChecks(
-  checks: readonly Check[],
-  ctx: ScanContext,
+export async function runChecks<Ctx, C extends RunnableCheck<Ctx>>(
+  checks: readonly C[],
+  ctx: Ctx,
   options: RunnerOptions = {},
 ): Promise<CheckResult[]> {
   const perCheckTimeoutMs = options.perCheckTimeoutMs ?? DEFAULT_PER_CHECK_TIMEOUT_MS;
