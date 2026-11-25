@@ -41,16 +41,56 @@ export type SiteSnapshot = {
   notes: string[];
 };
 
+export type RepoTreeEntry = {
+  path: string;
+  size: number | null;
+};
+
+export type RepoFile = {
+  path: string;
+  text: string;
+  truncated: boolean;
+};
+
+/** Everything repo checks need: the file tree plus fetched text contents. */
+export type RepoSnapshot = {
+  owner: string;
+  repo: string;
+  defaultBranch: string;
+  /** Commit SHA the tree and file contents were read at. */
+  sha: string;
+  /** True when GitHub truncated the recursive tree listing. */
+  treeTruncated: boolean;
+  /** Every blob in the tree (including files skipped for content scanning). */
+  tree: RepoTreeEntry[];
+  files: RepoFile[];
+  /** Human-readable notes about skipped files and budget exhaustion. */
+  notes: string[];
+};
+
 export type ScanContext = {
   snapshot: SiteSnapshot;
   fetch: Fetcher;
 };
 
+export type RepoScanContext = {
+  repo: RepoSnapshot;
+};
+
 export type Check = {
   id: string;
   category: Category;
-  target: "site" | "repo";
+  target: "site";
   /** Per-check timeout override; the runner default applies when absent. */
   timeoutMs?: number;
   run(ctx: ScanContext): Promise<RawFinding[]>;
+};
+
+export type RepoCheck = {
+  id: string;
+  category: Category;
+  target: "repo";
+  /** Per-check timeout override; the runner default applies when absent. */
+  timeoutMs?: number;
+  run(ctx: RepoScanContext): Promise<RawFinding[]>;
 };

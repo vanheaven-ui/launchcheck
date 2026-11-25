@@ -24,7 +24,7 @@ pnpm db:migrate   # applies drizzle/ migrations (needs DATABASE_URL)
 pnpm dev
 ```
 
-## How the scan pipeline works (Phase 2A)
+## How the scan pipeline works (Phase 3A)
 
 When a scan is requested, the Inngest function `scan.run` executes these steps:
 
@@ -38,9 +38,20 @@ When a scan is requested, the Inngest function `scan.run` executes these steps:
    - runs the registered site checks (`lib/scanner/registry.ts`) in parallel with a
      5-second per-check timeout — a failing check becomes a `check_errored` info
      finding and never fails the scan,
-   - replaces the scan's `findings` rows (delete-then-insert, safe to retry) and
-     returns only `{ findingCount }`.
-4. `finalize` — marks the scan completed.
+   - replaces the scan's `site.` findings rows and returns only `{ findingCount }`.
+4. `scan-repo` *(repo scans only)* — inside a single step it:
+   - reads repo metadata and the file tree through Octokit (`api.github.com`),
+   - fetches selected text files from `raw.githubusercontent.com` through the same
+     SSRF-safe fetcher (public repos only; a private repo is treated as not found),
+   - runs the registered repo checks (`lib/scanner/repo-registry.ts`),
+   - replaces the scan's `repo.` findings rows and returns only `{ findingCount }`.
+     In `both` mode an unreadable repo becomes one `info` finding instead of
+     failing the scan; in `repo` mode it fails with `repo_unreachable`.
+5. `finalize` — marks the scan completed.
+
+Finding persistence is scoped per step: `persistFindings(..., { scope: "site" })`
+deletes only `site.*` check rows and `{ scope: "repo" }` only `repo.*`, so the two
+steps never delete each other's findings and retries stay idempotent.
 
 ## Implemented site checks (Phase 2)
 
@@ -64,7 +75,22 @@ secrets scrubbed (a defensive pass masks any full secret before insert) and
 are surfaced on `/scan/<id>` as severity counts plus the top finding titles
 once the scan completes; the full report arrives in a later phase.
 
-Repo scans skip `scan-site` entirely until Phase 3.
+## Implemented repo checks (Phase 3A)
+
+| Check | What it does |
+|---|---|
+| `repo.env.committed` | Flags committed `.env`-style files (critical when a fetched file has real values) |
+| `repo.secrets.patterns` | Regex scan of fetched repo files for leaked credentials plus Supabase `service_role` JWTs; test-like paths are down-ranked |
+| `repo.quality.basics` | Missing README, lockfile, `.gitignore` (and env coverage), or tests |
+
+### GitHub token (optional)
+
+Repo scans work without a token at GitHub's low unauthenticated rate limit.
+Set `GITHUB_TOKEN` (a read-only personal access token, no extra scopes) in
+`.env.local` or the hosting provider to raise the limit. The token is only ever
+handed to Octokit — it is never logged, stored, or sent to `raw.githubusercontent.com`
+or the AI provider. Only **public** repositories are scanned; private repos are
+treated as not found.
 
 ## Running a scan locally
 

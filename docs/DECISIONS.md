@@ -111,3 +111,28 @@
 | Script-size finding is replaced by an info note when any script is truncated or snapshot notes record skips | Sizes would be lower bounds; SPEC requires noting skipped text instead of reporting a misleading number |
 | `persistFindings` scrubs title/evidence/location via `scrubSecrets` AFTER truncation and location sanitizing | SPEC 2C: defensive scrub so a buggy check can never persist a full secret |
 | Fixture secrets/JWTs/apiKeys are assembled at runtime via string concatenation and base64url helpers | No secret-shaped literal may exist in the repo; the served bundle still contains the assembled values |
+
+## 2026-11-23 — Phase 3A repo snapshot, repo checks, pipeline step
+
+| Decision | Reason |
+|---|---|
+| `@octokit/rest` was already pinned at 22.0.1 before this phase | Dependency landed with an earlier docs/dependency commit; verified installed and `pnpm build`-compatible |
+| Octokit timeout via per-request `request: { signal: AbortSignal.timeout(10_000) }` | Octokit 22 supports `signal` in `RequestRequestOptions`; no global timeout option exists |
+| User agent `LaunchCheckBot/1.0` on the Octokit client (not the safeFetch UA) | SPEC 4.3 names this UA for repo metadata calls; file contents still go through safeFetch's own UA |
+| Private repos map to `repo_not_found` | SPEC: v1 scans public repos only; a private repo must be indistinguishable from a missing one |
+| Rate limit = 403/429 AND (`x-ratelimit-remaining: 0` OR message matches /rate limit/i) | Covers both primary and secondary GitHub rate limits without flagging ordinary 403s |
+| Error messages are fixed generic strings; response bodies and the token never appear | SPEC 4.3 + AGENTS: no secrets or internals in errors |
+| `parseRepoUrl` reuses the exported `GITHUB_REPO_URL` regex (capture groups added) and strips a trailing `.git` | Single source of truth for repo URL rules; the greedy repo group would otherwise swallow ".git" |
+| `snapshot.tree` keeps every blob (including skipped/oversized files); `files` holds only fetched text | Checks like `repo.env.committed` and `repo.quality.basics` need the full listing, not just fetched contents |
+| Oversized tree entries (>200 KB) are skipped before fetching; fetched bodies are also hard-truncated to 200 KB | SPEC 4.3 per-file cap; the injected fetcher is NOT modified (its cap stays 5 MB) |
+| Fetch order: env/config tier, then app/src/pages/lib/api/supabase, then rest; shallow before deep, alpha tiebreak | SPEC 4.3/Phase 3A priority; deterministic so tests can assert exact order |
+| Byte budget counts post-truncation body length; concurrency overshoot bounded by 6 in-flight fetches | Same guard-rail approach as the site snapshot (documented there as acceptable) |
+| `runChecks` generalized to `<Ctx, C extends RunnableCheck<Ctx>>`; `Check.target` narrowed to `"site"`, new `RepoCheck.target: "repo"` | Site and repo checks share one runner; `target` was never read at runtime |
+| `persistFindings` takes required `{ scope }` and deletes `check_id LIKE '<scope>.%'` for this scan only | SPEC 4.3 scoped persistence; `site.`/`repo.` prefixes match every check id by convention |
+| `repo.env.committed`: critical/high only when a fetched env file has a non-empty `KEY=value`; otherwise high/medium | SPEC gives severity guidance only; confidence medium when contents are unknown or placeholder-like |
+| `repo.secrets.patterns` sorts candidates by severity before the 20-finding cap | A repo full of test fixtures must not crowd out a real critical leak |
+| `.env.example` files are exempt from the test-path down-rank | SPEC 4.3: a real-looking key in an example file is a genuine leak |
+| `service_role` JWTs are flagged by decoding the payload (no verification) and checking `role` | Same detection approach as `site.backend.supabase`; signature verification is impossible and unnecessary for a heuristic |
+| `repo.quality.basics` "workspace root" = any directory containing a `package.json`; test detection accepts `*.test.*`/`*.spec.*`, `__tests__`/`tests` dir segments, or a `"test"` script key inside `scripts` | Simplest reading of SPEC 4.2 `repo.quality.basics`; documented as a heuristic |
+| Repo-only scan with unreadable repo throws `NonRetriableError("repo_unreachable")` regardless of the specific reason | SPEC section 10 implemented-pipeline note says exactly this |
+| `GITHUB_TOKEN` read via `getEnv()` inside the scan-repo step; optional everywhere | SPEC 16: optional, raises GitHub rate limits; absent token still scans public repos |
