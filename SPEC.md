@@ -198,7 +198,13 @@ const ExplainedFinding = z.object({
    - Timeout 10s, max response size 5 MB enforced while streaming (including decompressed size), max 15 bundle files per scan. Only GET and HEAD. Never forward cookies or auth headers.
    - Errors use safe reason codes (`blocked_url`, `blocked_ip`, `too_many_redirects`, `timeout`, `too_large`, `network_error`) and never leak internal IPs or stack traces.
    - The fetcher runs only on the Node.js runtime, never Edge.
-2. **Abuse controls:** rate limit anonymous scans to 3/hour/IP and signed-in users to 20/day. Block scanning the same domain more than 5 times per day. In production, if the rate-limit store is unavailable, **fail closed** (503). An in-memory limiter is allowed only when `NODE_ENV` is not production.
+2. **Abuse controls (and their user experience):**
+   - Limits are configurable through server-only env vars validated as integers from 1 to 100: `RATE_LIMIT_IP_PER_HOUR` (default 10 in production, 100 outside production) and `RATE_LIMIT_DOMAIN_PER_DAY` (default 10). Signed-in users get a higher per-user limit later (Phase 5).
+   - The per-target bucket is keyed on the scan TARGET: the site hostname for site scans, and `github.com/<owner>/<repo>` for repo scans (never just `github.com`, which would make one global bucket for every repo scan). A `both` scan checks both targets.
+   - Only a request that passed validation and will actually create a new scan consumes a rate-limit token. Invalid requests never consume one. Order: validate, de-duplicate, limit, create.
+   - De-duplication: if the same anonymous cookie already has a scan for the same target and mode that is `queued`/`running`, or `completed` within the last 60 seconds, return that scan's id (HTTP 200, `reused: true`) without consuming a token.
+   - A rejected request returns HTTP 429 with a `Retry-After` header and a body `{ error: "rate_limited", scope: "ip" | "domain", retryAfterSeconds, message }`. The UI shows a calm message with a countdown, keeps the form values, and re-enables the button when the wait is over. Responses never reveal other users' scans.
+   - In production, if the rate-limit store is unavailable, **fail closed** with HTTP 503 and a friendly "temporarily unavailable" message with `Retry-After: 30`. An in-memory limiter is allowed only when `NODE_ENV` is not production.
 3. **Ownership note:** The UI must state "Only scan sites and repos you own or have permission to test" and require a checkbox before scanning.
 4. **User-Agent:** `LaunchCheckBot/1.0 (+https://<domain>/bot)`; add a `/bot` page explaining what it does and how to opt out. Respect `robots.txt` disallow for `LaunchCheckBot` for site fetches beyond the home page.
 5. No scanning of `localhost`, IPs, or the app's own domain.
