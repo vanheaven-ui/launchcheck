@@ -1,31 +1,75 @@
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
+import { z } from "zod";
 
 /**
- * Rate limiting for scan creation (SPEC section 7.2):
- *  - 3 scans per hour per IP for anonymous users
- *  - no more than 5 scans per day for the same domain
+ * Rate limiting for scan creation:
+ *  - per-IP scans per hour (RATE_LIMIT_IP_PER_HOUR; default 10 in production,
+ *    100 otherwise)
+ *  - per-target scans per day (RATE_LIMIT_DOMAIN_PER_DAY; default 10), where a
+ *    target is the site hostname or "github.com/<owner>/<repo>" — never a bare
+ *    "github.com", which would put every repo scan in one global bucket.
  *
  * Uses Upstash Redis sliding windows when configured. In non-production
  * environments a simple in-memory sliding window is used instead; in
  * production a missing Upstash configuration fails closed (503).
+ *
+ * Rejected requests never consume tokens: every bucket is peeked first
+ * (Upstash `getRemaining`, which does not consume) and only consumed via
+ * `limit()` when all peeks pass. A consume can still fail if another request
+ * races in between — that rare case reports the rejection and is documented
+ * in docs/DECISIONS.md.
  */
 
-export const ANON_SCAN_LIMIT = 3;
-export const ANON_SCAN_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-export const DOMAIN_SCAN_LIMIT = 5;
-export const DOMAIN_SCAN_WINDOW_MS = 24 * 60 * 60 * 1000; // 1 day
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+const limitValue = z.coerce.number().int().min(1).max(100);
+
+export type RateLimitConfig = {
+  ipLimit: number;
+  ipWindowMs: number;
+  domainLimit: number;
+  domainWindowMs: number;
+};
+
+function envLimit(name: string, fallback: number): number {
+  const parsed = limitValue.safeParse(process.env[name]);
+  return parsed.success ? parsed.data : fallback;
+}
+
+/** Effective limits for this process, read from env on every call. */
+export function rateLimitConfig(): RateLimitConfig {
+  return {
+    ipLimit: envLimit("RATE_LIMIT_IP_PER_HOUR", process.env.NODE_ENV === "production" ? 10 : 100),
+    ipWindowMs: HOUR_MS,
+    domainLimit: envLimit("RATE_LIMIT_DOMAIN_PER_DAY", 10),
+    domainWindowMs: DAY_MS,
+  };
+}
+
+export type RateLimitScope = "ip" | "domain";
 
 export type RateLimitDecision =
   | { allowed: true }
-  | { allowed: false; status: 429 | 503; retryAfterSeconds?: number };
+  | { allowed: false; status: 503 }
+  | {
+      allowed: false;
+      status: 429;
+      scope: RateLimitScope;
+      retryAfterSeconds: number;
+    };
 
-type WindowChecker = (key: string) => Promise<{ success: boolean; reset: number }>;
+/** A single bucket check: `peek` does not consume, `consume` records a hit. */
+type WindowStore = {
+  peek(key: string): Promise<{ success: boolean; reset: number }>;
+  consume(key: string): Promise<{ success: boolean; reset: number }>;
+};
 
-function upstashWindow(
+function upstashStore(
   limit: number,
   window: `${number} ${"ms" | "s" | "m" | "h" | "d"}`,
-): WindowChecker {
+): WindowStore {
   const redis = new Redis({
     url: process.env.UPSTASH_REDIS_REST_URL as string,
     token: process.env.UPSTASH_REDIS_REST_TOKEN as string,
@@ -35,9 +79,15 @@ function upstashWindow(
     limiter: Ratelimit.slidingWindow(limit, window),
     prefix: "launchcheck",
   });
-  return async (key) => {
-    const result = await ratelimit.limit(key);
-    return { success: result.success, reset: result.reset };
+  return {
+    peek: async (key) => {
+      const result = await ratelimit.getRemaining(key);
+      return { success: result.remaining > 0, reset: result.reset };
+    },
+    consume: async (key) => {
+      const result = await ratelimit.limit(key);
+      return { success: result.success, reset: result.reset };
+    },
   };
 }
 
@@ -50,19 +100,38 @@ export class InMemorySlidingWindow {
     private readonly windowMs: number,
   ) {}
 
-  async check(key: string, now: number = Date.now()): Promise<{ success: boolean; reset: number }> {
+  private evaluate(
+    key: string,
+    now: number,
+  ): { entries: number[]; success: boolean; reset: number } {
     const cutoff = now - this.windowMs;
     const entries = (this.hits.get(key) ?? []).filter((ts) => ts > cutoff);
-
     if (entries.length >= this.limit) {
       const oldest = entries[0];
-      this.hits.set(key, entries);
-      return { success: false, reset: oldest + this.windowMs };
+      return {
+        entries,
+        success: false,
+        reset: oldest === undefined ? now + this.windowMs : oldest + this.windowMs,
+      };
     }
+    return { entries, success: true, reset: now + this.windowMs };
+  }
 
-    entries.push(now);
+  /** Would the next check pass? Does not record a hit. */
+  async peek(key: string, now: number = Date.now()): Promise<{ success: boolean; reset: number }> {
+    const { success, reset } = this.evaluate(key, now);
+    return { success, reset };
+  }
+
+  async check(key: string, now: number = Date.now()): Promise<{ success: boolean; reset: number }> {
+    const { entries, success, reset } = this.evaluate(key, now);
+    // Only allowed requests are recorded; a rejected check must never extend
+    // the block for a user who keeps retrying.
+    if (success) {
+      entries.push(now);
+    }
     this.hits.set(key, entries);
-    return { success: true, reset: now + this.windowMs };
+    return { success, reset };
   }
 
   /** Test helper: drop all recorded hits. */
@@ -71,25 +140,42 @@ export class InMemorySlidingWindow {
   }
 }
 
-const memoryIpWindow = new InMemorySlidingWindow(ANON_SCAN_LIMIT, ANON_SCAN_WINDOW_MS);
-const memoryDomainWindow = new InMemorySlidingWindow(DOMAIN_SCAN_LIMIT, DOMAIN_SCAN_WINDOW_MS);
+const memoryWindows = new Map<string, { ip: WindowStore; domain: WindowStore }>();
+const upstashWindows = new Map<string, { ip: WindowStore; domain: WindowStore }>();
 
-let upstashIpWindow: WindowChecker | null = null;
-let upstashDomainWindow: WindowChecker | null = null;
+function memoryStore(window: InMemorySlidingWindow): WindowStore {
+  return {
+    peek: (key) => window.peek(key),
+    consume: (key) => window.check(key),
+  };
+}
 
-function getWindows(): { ip: WindowChecker; domain: WindowChecker } | null {
+function getStores(config: RateLimitConfig): { ip: WindowStore; domain: WindowStore } | null {
   const url = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  const cacheKey = `${config.ipLimit}/${config.domainLimit}`;
+
   if (url && token) {
-    upstashIpWindow ??= upstashWindow(ANON_SCAN_LIMIT, "1 h");
-    upstashDomainWindow ??= upstashWindow(DOMAIN_SCAN_LIMIT, "1 d");
-    return { ip: upstashIpWindow, domain: upstashDomainWindow };
+    let stores = upstashWindows.get(cacheKey);
+    if (!stores) {
+      stores = {
+        ip: upstashStore(config.ipLimit, "1 h"),
+        domain: upstashStore(config.domainLimit, "1 d"),
+      };
+      upstashWindows.set(cacheKey, stores);
+    }
+    return stores;
   }
   if (process.env.NODE_ENV !== "production") {
-    return {
-      ip: (key) => memoryIpWindow.check(key),
-      domain: (key) => memoryDomainWindow.check(key),
-    };
+    let stores = memoryWindows.get(cacheKey);
+    if (!stores) {
+      stores = {
+        ip: memoryStore(new InMemorySlidingWindow(config.ipLimit, config.ipWindowMs)),
+        domain: memoryStore(new InMemorySlidingWindow(config.domainLimit, config.domainWindowMs)),
+      };
+      memoryWindows.set(cacheKey, stores);
+    }
+    return stores;
   }
   return null;
 }
@@ -98,32 +184,66 @@ function retryAfterSeconds(reset: number): number {
   return Math.max(1, Math.ceil((reset - Date.now()) / 1000));
 }
 
+type BucketCheck = { scope: RateLimitScope; key: string; reset: number };
+
 /**
- * Check both limits for a scan attempt. `domain` may be null (e.g. only a repo
- * URL was given and it could not be parsed); the per-IP limit still applies.
+ * Check the per-IP limit and every per-target limit for a scan attempt.
+ * `targets` are already-normalized bucket keys (site hostname, or
+ * "github.com/<owner>/<repo>"). All buckets are peeked first so a rejection
+ * never consumes a token from another bucket; consumption happens only when
+ * every peek passes.
  */
 export async function checkScanRateLimits(input: {
   ip: string;
-  domain: string | null;
+  targets: string[];
 }): Promise<RateLimitDecision> {
-  const windows = getWindows();
-  if (!windows) {
+  const stores = getStores(rateLimitConfig());
+  if (!stores) {
     return { allowed: false, status: 503 };
   }
 
-  const ipKey = `ip:${input.ip}`;
-  const ipResult = await windows.ip(ipKey);
-  if (!ipResult.success) {
-    return { allowed: false, status: 429, retryAfterSeconds: retryAfterSeconds(ipResult.reset) };
+  const buckets: BucketCheck[] = [
+    { scope: "ip", key: `ip:${input.ip}`, reset: 0 },
+    ...input.targets.map((target) => ({
+      scope: "domain" as const,
+      key: `domain:${target}`,
+      reset: 0,
+    })),
+  ];
+  const storeFor = (scope: RateLimitScope) => (scope === "ip" ? stores.ip : stores.domain);
+
+  // Peek every bucket; collect rejections without consuming anything.
+  const rejected: { scope: RateLimitScope; retryAfterSeconds: number }[] = [];
+  for (const bucket of buckets) {
+    const result = await storeFor(bucket.scope).peek(bucket.key);
+    if (!result.success) {
+      rejected.push({
+        scope: bucket.scope,
+        retryAfterSeconds: retryAfterSeconds(result.reset),
+      });
+    }
+  }
+  if (rejected.length > 0) {
+    // Report the longest wait when several buckets reject.
+    const worst = rejected.reduce((a, b) => (b.retryAfterSeconds > a.retryAfterSeconds ? b : a));
+    return {
+      allowed: false,
+      status: 429,
+      scope: worst.scope,
+      retryAfterSeconds: worst.retryAfterSeconds,
+    };
   }
 
-  if (input.domain) {
-    const domainResult = await windows.domain(`domain:${input.domain}`);
-    if (!domainResult.success) {
+  // All peeks passed: consume. A failure here means a concurrent request raced
+  // the peek; report it (other buckets may already hold a consumed token).
+  for (const bucket of buckets) {
+    const result = await storeFor(bucket.scope).consume(bucket.key);
+    if (!result.success) {
       return {
         allowed: false,
         status: 429,
-        retryAfterSeconds: retryAfterSeconds(domainResult.reset),
+        scope: bucket.scope,
+        retryAfterSeconds: retryAfterSeconds(result.reset),
       };
     }
   }

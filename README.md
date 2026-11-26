@@ -108,7 +108,8 @@ npx inngest-cli@latest dev
 
 Notes:
 
-- `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` are optional locally — an in-memory rate limiter (3 scans/hour/IP, 5 scans/day/domain) is used instead. They are **required in production**.
+- `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` are optional locally — an in-memory rate limiter is used instead. They are **required in production** (the app fails closed with 503 without them).
+- Scan limits default to 10 scans/hour per IP and 10 scans/day per target (the site hostname, or `github.com/<owner>/<repo>` for repo scans — each repo has its own bucket). Locally the per-IP default is 100/hour. Override with `RATE_LIMIT_IP_PER_HOUR` and `RATE_LIMIT_DOMAIN_PER_DAY` (integers 1–100). When a limit is hit the API returns 429 with `Retry-After` and the form shows a countdown; submitting the same scan twice within a minute reuses the existing scan instead of starting a new one.
 - `INNGEST_EVENT_KEY` / `INNGEST_SIGNING_KEY` are optional locally with the dev server; **required in production**.
 - Apply new migrations with `pnpm db:migrate` after pulling schema changes (generate them with `pnpm db:generate`).
 

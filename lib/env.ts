@@ -33,6 +33,15 @@ const envSchema = z
     UPSTASH_REDIS_REST_URL: optionalUrl,
     UPSTASH_REDIS_REST_TOKEN: optionalString,
 
+    RATE_LIMIT_IP_PER_HOUR: z.preprocess(
+      (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+      z.coerce.number().int().min(1).max(100).optional(),
+    ),
+    RATE_LIMIT_DOMAIN_PER_DAY: z.preprocess(
+      (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+      z.coerce.number().int().min(1).max(100).optional(),
+    ),
+
     INNGEST_EVENT_KEY: optionalString,
     INNGEST_SIGNING_KEY: optionalString,
 

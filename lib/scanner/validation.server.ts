@@ -16,7 +16,9 @@ registerSiteUrlValidator((input): SiteUrlCheckResult => {
 });
 
 export {
+  GITHUB_REPO_URL,
   hostnameFromUrl,
+  parseGithubRepoUrl,
   type ScanMode,
   type ScanRequest,
   scanModeSchema,

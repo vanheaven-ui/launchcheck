@@ -136,3 +136,18 @@
 | `repo.quality.basics` "workspace root" = any directory containing a `package.json`; test detection accepts `*.test.*`/`*.spec.*`, `__tests__`/`tests` dir segments, or a `"test"` script key inside `scripts` | Simplest reading of SPEC 4.2 `repo.quality.basics`; documented as a heuristic |
 | Repo-only scan with unreadable repo throws `NonRetriableError("repo_unreachable")` regardless of the specific reason | SPEC section 10 implemented-pipeline note says exactly this |
 | `GITHUB_TOKEN` read via `getEnv()` inside the scan-repo step; optional everywhere | SPEC 16: optional, raises GitHub rate limits; absent token still scans public repos |
+
+## 2026-11-25 — Rate-limit UX, per-repo buckets, and scan de-duplication
+
+| Decision | Reason |
+|---|---|
+| Per-target bucket key is the site hostname or `github.com/<owner>/<repo>` lowercased — never bare `github.com` | The old key put every repo scan in one global daily bucket shared by all users |
+| Limits are env-driven: `RATE_LIMIT_IP_PER_HOUR` (default 10 production / 100 otherwise) and `RATE_LIMIT_DOMAIN_PER_DAY` (default 10), integers 1–100 via Zod | SPEC 7.2 abuse controls need tuning without code changes; invalid values fall back to defaults |
+| All buckets are peeked before any token is consumed (Upstash `getRemaining`, in-memory `peek`) | A rejected request must not consume quota from the other bucket; @upstash/ratelimit 2.2.0 supports non-consuming `getRemaining` |
+| A consume that still fails after a passing peek (concurrent race) reports the rejection | Peek+consume is not atomic; the race window is tiny and the outcome stays safe (request rejected, never over-admitted) |
+| When several buckets reject, the one with the longer `retryAfterSeconds` is reported | SPEC asks for a single calm, specific message; the longest wait is the honest answer |
+| POST order is validate → de-dupe → rate-limit → insert | Invalid bodies never touch the limiter; de-duped resubmits reuse the scan and consume no token |
+| De-dup window: same anon token hash + same stored siteUrl/repoUrl pair, status queued/running, or completed within 60 s → 200 `{ id, reused: true }` | Covers double-clicks and retries without masking genuinely new scans; failed scans are never reused |
+| Mode is implied by which URL columns are set (there is no mode column) | The (siteUrl, repoUrl) pair uniquely determines the mode for all valid requests |
+| 429 body is `{ error: "rate_limited", scope, retryAfterSeconds, message }` with `Retry-After` + `Cache-Control: no-store`; 503 adds `Retry-After: 30` | Lets the UI show an exact countdown; no-store prevents cached error pages |
+| UI countdown disables submit until zero, announces politely only on minute changes, and never touches form values | Accessibility: `role="alert"` announces once; the per-second tick is `aria-live="off"` |
