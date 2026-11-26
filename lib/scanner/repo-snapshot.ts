@@ -1,7 +1,7 @@
 import type { GithubClient, GithubErrorCode } from "@/lib/scanner/github";
 import { GithubError } from "@/lib/scanner/github";
 import type { Fetcher, RepoFile, RepoSnapshot, RepoTreeEntry } from "@/lib/scanner/types";
-import { GITHUB_REPO_URL } from "@/lib/scanner/validation";
+import { parseGithubRepoUrl } from "@/lib/scanner/validation";
 
 /**
  * Repo snapshot builder (Phase 3A). Reads the repo metadata and file tree via
@@ -165,18 +165,7 @@ function toFailure(reason: GithubErrorCode): RepoSnapshotResult {
  * the URL does not match.
  */
 export function parseRepoUrl(url: string): { owner: string; repo: string } | null {
-  const match = GITHUB_REPO_URL.exec(url.trim());
-  if (!match) {
-    return null;
-  }
-  const owner = match[1];
-  // The greedy repo group can swallow a trailing ".git"; strip it so
-  // ".../owner/repo.git" resolves to repo "repo".
-  const repo = match[2].replace(/\.git$/i, "");
-  if (owner === undefined || repo === "") {
-    return null;
-  }
-  return { owner, repo };
+  return parseGithubRepoUrl(url);
 }
 
 /**

@@ -62,6 +62,21 @@ export const repoUrlField = z
   .max(2048, "URL is too long.")
   .regex(GITHUB_REPO_URL, "Use a public GitHub URL like https://github.com/owner/repo.");
 
+/**
+ * Parse a strict GitHub repo URL into owner/repo (".git" suffix and one
+ * trailing slash ignored), or null when it does not match. Isomorphic: safe
+ * for client and server use.
+ */
+export function parseGithubRepoUrl(url: string): { owner: string; repo: string } | null {
+  const match = GITHUB_REPO_URL.exec(url.trim());
+  const owner = match?.[1];
+  const repo = match?.[2]?.replace(/\.git$/i, "");
+  if (!owner || !repo) {
+    return null;
+  }
+  return { owner, repo };
+}
+
 const optionalUrlField = z
   .string()
   .trim()

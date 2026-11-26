@@ -2,13 +2,14 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { formatCountdown, parseRateLimitError, remainingSeconds } from "@/lib/retry-after";
 import { type ScanMode, type ScanRequest, scanRequestSchema } from "@/lib/scanner/validation";
 
 const MODE_OPTIONS: { value: ScanMode; label: string }[] = [
@@ -16,6 +17,27 @@ const MODE_OPTIONS: { value: ScanMode; label: string }[] = [
   { value: "repo", label: "Repo" },
   { value: "both", label: "Both" },
 ];
+
+const DEFAULT_429_SECONDS = 60;
+const DEFAULT_503_SECONDS = 30;
+
+function retryAfterHeaderSeconds(response: Response, fallback: number): number {
+  const raw = response.headers.get("retry-after");
+  if (!raw) {
+    return fallback;
+  }
+  const seconds = Number.parseInt(raw, 10);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : fallback;
+}
+
+async function responseMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = (await response.json()) as { message?: unknown };
+    return typeof body.message === "string" && body.message !== "" ? body.message : fallback;
+  } catch {
+    return fallback;
+  }
+}
 
 export function ScanForm() {
   const router = useRouter();
@@ -28,9 +50,16 @@ export function ScanForm() {
   const ownershipId = `${uid}-accepted-ownership`;
   const ownershipLabelId = `${uid}-accepted-ownership-label`;
   const ownershipErrorId = `${uid}-accepted-ownership-error`;
+  const countdownId = `${uid}-countdown`;
+  const politeId = `${uid}-polite`;
 
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Server-imposed cooldown (429/503): submit stays disabled until it ends.
+  const [cooldown, setCooldown] = useState<{ message: string; retryAt: number } | null>(null);
+  const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+  const [politeMessage, setPoliteMessage] = useState("");
+  const announcedMinuteRef = useRef<number | null>(null);
 
   const {
     register,
@@ -52,6 +81,42 @@ export function ScanForm() {
   const showSite = mode !== "repo";
   const showRepo = mode !== "site";
 
+  useEffect(() => {
+    if (!cooldown) {
+      return;
+    }
+    announcedMinuteRef.current = null;
+
+    const update = () => {
+      const remaining = remainingSeconds(cooldown.retryAt);
+      setSecondsLeft(remaining);
+      if (remaining <= 0) {
+        setCooldown(null);
+        setSecondsLeft(null);
+        setPoliteMessage("You can submit again now.");
+        return;
+      }
+      // Announce politely only when the remaining minutes change, so screen
+      // readers are not spammed every second.
+      const minute = Math.floor(remaining / 60);
+      if (announcedMinuteRef.current !== minute) {
+        announcedMinuteRef.current = minute;
+        setPoliteMessage(`You can try again in ${formatCountdown(remaining)}.`);
+      }
+    };
+
+    update();
+    const interval = setInterval(update, 1000);
+    return () => clearInterval(interval);
+  }, [cooldown]);
+
+  function startCooldown(message: string, retryAfterSeconds: number) {
+    setCooldown({ message, retryAt: Date.now() + retryAfterSeconds * 1000 });
+    setSecondsLeft(retryAfterSeconds);
+    announcedMinuteRef.current = Math.floor(retryAfterSeconds / 60);
+    setPoliteMessage(`You can try again in ${formatCountdown(retryAfterSeconds)}.`);
+  }
+
   async function onSubmit(values: ScanRequest) {
     setIsSubmitting(true);
     setSubmitError(null);
@@ -62,15 +127,35 @@ export function ScanForm() {
         body: JSON.stringify(values),
       });
 
-      if (response.status === 201) {
-        const { id } = (await response.json()) as { id: string };
-        router.push(`/scan/${id}`);
-        return;
+      // 201 = new scan; 200 = an identical scan was reused (deduplicated).
+      if (response.status === 201 || response.status === 200) {
+        const body = (await response.json()) as { id?: unknown };
+        if (typeof body.id === "string") {
+          router.push(`/scan/${body.id}`);
+          return;
+        }
       }
       if (response.status === 429) {
-        setSubmitError("Too many scans from your network. Please wait and try again.");
+        const bodyJson: unknown = await response.json().catch(() => null);
+        const payload = parseRateLimitError(bodyJson);
+        const retryAfter =
+          payload?.retryAfterSeconds ?? retryAfterHeaderSeconds(response, DEFAULT_429_SECONDS);
+        const fallbackMessage =
+          typeof bodyJson === "object" &&
+          bodyJson !== null &&
+          "message" in bodyJson &&
+          typeof bodyJson.message === "string" &&
+          bodyJson.message !== ""
+            ? bodyJson.message
+            : "Please wait a moment before trying again.";
+        startCooldown(payload?.message ?? fallbackMessage, retryAfter);
       } else if (response.status === 503) {
-        setSubmitError("The scan service is temporarily unavailable. Please try again later.");
+        const retryAfter = retryAfterHeaderSeconds(response, DEFAULT_503_SECONDS);
+        const message = await responseMessage(
+          response,
+          "Scanning is temporarily unavailable. Please try again in a moment.",
+        );
+        startCooldown(message, retryAfter);
       } else {
         setSubmitError("Something went wrong. Please try again.");
       }
@@ -80,6 +165,8 @@ export function ScanForm() {
       setIsSubmitting(false);
     }
   }
+
+  const cooldownActive = cooldown !== null;
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} noValidate className="w-full">
@@ -157,10 +244,28 @@ export function ScanForm() {
         ) : null}
 
         <div>
-          <Button type="submit" size="lg" disabled={isSubmitting} className="w-full sm:w-auto">
-            {isSubmitting ? "Starting…" : "Run pre-flight"}
+          <Button
+            type="submit"
+            size="lg"
+            disabled={isSubmitting || cooldownActive}
+            className="w-full sm:w-auto"
+          >
+            {isSubmitting ? "Starting…" : cooldownActive ? "Please wait…" : "Run pre-flight"}
           </Button>
         </div>
+
+        {cooldown ? (
+          <div role="alert" className="text-sm text-[var(--critical)]">
+            <p>{cooldown.message}</p>
+            <p id={countdownId} aria-live="off" className="mt-1">
+              You can try again in {formatCountdown(secondsLeft ?? 0)}.
+            </p>
+          </div>
+        ) : null}
+
+        <p id={politeId} aria-live="polite" className="sr-only">
+          {politeMessage}
+        </p>
 
         <div className="flex items-start gap-3">
           <Controller
