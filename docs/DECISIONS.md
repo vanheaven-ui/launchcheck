@@ -151,3 +151,13 @@
 | Mode is implied by which URL columns are set (there is no mode column) | The (siteUrl, repoUrl) pair uniquely determines the mode for all valid requests |
 | 429 body is `{ error: "rate_limited", scope, retryAfterSeconds, message }` with `Retry-After` + `Cache-Control: no-store`; 503 adds `Retry-After: 30` | Lets the UI show an exact countdown; no-store prevents cached error pages |
 | UI countdown disables submit until zero, announces politely only on minute changes, and never touches form values | Accessibility: `role="alert"` announces once; the per-second tick is `aria-live="off"` |
+
+## 2026-11-26 — Phase 3B repo checks (OSV audit + pattern heuristics)
+
+| Decision | Reason |
+|---|---|
+| OSV uses a dedicated fixed-host client (`api.osv.dev`) instead of the GET-only injected `Fetcher` | The batch query needs POST; the host is a constant so it is not an SSRF path (SPEC 4.3) |
+| `repo.deps.audit` picks ONE root lockfile (package-lock > pnpm-lock > yarn.lock), caps at 1500 packages / 50 advisory lookups, and degrades every failure to an info finding | SPEC 4.3 limits; the check must never throw or block the scan |
+| `repo.stripe.webhook`, `repo.api.noauth`, `repo.supabase.rls` are pure heuristics over fetched files — every finding says "possible" and confidence drops on ambiguous signals (local verify module, middleware, truncated/missing SQL) | SPEC 4.3: passive checks report potential issues only |
+| SQL files are not path-filtered in `repo.supabase.rls` | A `tests/`-style path filter would also skip real migrations like `20240101_sample_data.sql`; a possible follow-up is skipping only a `tests/` or `supabase/tests/` directory |
+- A backtick inside a `String.raw` template literal ends the literal; write it as `\x60` in regex character classes.

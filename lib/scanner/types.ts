@@ -1,4 +1,5 @@
 import type { IncomingHttpHeaders } from "node:http";
+import type { OsvClient } from "@/lib/scanner/osv";
 import type { SafeFetchResult } from "@/lib/scanner/safe-fetch";
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
@@ -75,6 +76,12 @@ export type ScanContext = {
 
 export type RepoScanContext = {
   repo: RepoSnapshot;
+  /** Injected fetcher for extra repo files (e.g. lockfiles) via safeFetch. */
+  fetch: Fetcher;
+  /** Injected OSV client for the dependency audit. */
+  osv: OsvClient;
+  /** Injectable clock for checks with internal budgets. */
+  now?: () => number;
 };
 
 export type Check = {
