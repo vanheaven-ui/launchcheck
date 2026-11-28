@@ -7,6 +7,7 @@ import { getEnv } from "@/lib/env";
 import { inngest } from "@/lib/inngest/client";
 import { productionFetcher } from "@/lib/scanner/fetcher";
 import { createOctokitGithubClient } from "@/lib/scanner/github";
+import { createOsvClient } from "@/lib/scanner/osv";
 import { persistFindings } from "@/lib/scanner/persist";
 import { runRepoScan, unreadableRepoFinding } from "@/lib/scanner/scan-repo";
 import { runSiteScan } from "@/lib/scanner/scan-site";
@@ -137,6 +138,7 @@ export const scanRun = inngest.createFunction(
           repoUrl,
           github,
           fetcher: productionFetcher,
+          osv: createOsvClient(),
         });
         if (!result.ok) {
           if (resolved.siteUrl) {

@@ -1,4 +1,5 @@
 import type { GithubClient, GithubErrorCode } from "@/lib/scanner/github";
+import { type OsvClient, productionOsvClient } from "@/lib/scanner/osv";
 import { repoChecks } from "@/lib/scanner/repo-registry";
 import { buildRepoSnapshot } from "@/lib/scanner/repo-snapshot";
 import { runChecks, toScanFindings } from "@/lib/scanner/runner";
@@ -12,6 +13,7 @@ export type RepoScanOptions = {
   repoUrl: string;
   github: GithubClient;
   fetcher: Fetcher;
+  osv?: OsvClient;
   checks?: readonly RepoCheck[];
 };
 
@@ -29,7 +31,12 @@ export async function runRepoScan(options: RepoScanOptions): Promise<RepoScanRes
     return built;
   }
 
-  const results = await runChecks(options.checks ?? repoChecks, { repo: built.snapshot });
+  const osv = options.osv ?? productionOsvClient;
+  const results = await runChecks(options.checks ?? repoChecks, {
+    repo: built.snapshot,
+    fetch: options.fetcher,
+    osv,
+  });
   const findings = toScanFindings(results);
 
   for (const note of built.snapshot.notes) {

@@ -3,6 +3,15 @@ import { runRepoScan, unreadableRepoFinding } from "@/lib/scanner/scan-repo";
 import { cleanRepoFiles } from "../../fixtures/repos/clean-repo";
 import { VULN_REPO_STRIPE_KEY, vulnerableRepoFiles } from "../../fixtures/repos/vulnerable-repo";
 import { createFakeGithub } from "../helpers/fake-github";
+import { createFakeOsv } from "../helpers/fake-osv";
+
+const VULN_OSV = createFakeOsv({
+  vulnsByPackage: { "lodash@4.17.20": ["GHSA-lodash-1"] },
+  vulnDetails: {
+    "GHSA-lodash-1": { id: "GHSA-lodash-1", severity: "high", summary: "Prototype pollution" },
+  },
+});
+const CLEAN_OSV = createFakeOsv();
 
 const VULN_URL = "https://github.com/acme/vulnerable-app";
 const CLEAN_URL = "https://github.com/acme/clean-app";
@@ -10,7 +19,7 @@ const CLEAN_URL = "https://github.com/acme/clean-app";
 describe("runRepoScan", () => {
   it("returns the failure reason when the repo cannot be read", async () => {
     const { github, fetcher } = createFakeGithub({});
-    const result = await runRepoScan({ repoUrl: VULN_URL, github, fetcher });
+    const result = await runRepoScan({ repoUrl: VULN_URL, github, fetcher, osv: VULN_OSV.osv });
     expect(result).toEqual({ ok: false, reason: "repo_not_found" });
   });
 
@@ -20,6 +29,7 @@ describe("runRepoScan", () => {
       repoUrl: "https://example.com/not-a-repo",
       github,
       fetcher,
+      osv: CLEAN_OSV.osv,
     });
     expect(result).toEqual({ ok: false, reason: "repo_unreachable" });
   });
@@ -32,9 +42,13 @@ describe("runRepoScan", () => {
         treeSha: "2".repeat(40),
       },
     });
-    const result = await runRepoScan({ repoUrl: VULN_URL, github, fetcher });
+    const result = await runRepoScan({ repoUrl: VULN_URL, github, fetcher, osv: VULN_OSV.osv });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+
+    // repo.deps.audit fires for the vulnerable lockfile.
+    const depsAudit = result.findings.filter((f) => f.checkId === "repo.deps.audit");
+    expect(depsAudit.some((f) => f.severity === "high")).toBe(true);
 
     // File-level findings (env.committed, secrets.patterns) link to
     // blob/<commit-sha>/<path>; repo-level findings (quality.basics without a
@@ -74,18 +88,38 @@ describe("runRepoScan", () => {
     const quality = result.findings.filter((f) => f.checkId === "repo.quality.basics");
     expect(quality.length).toBeGreaterThan(0);
     expect(quality.every((f) => f.severity === "low" || f.severity === "medium")).toBe(true);
+
+    // 3B-2 pattern checks all fire on the vulnerable fixture.
+    expect(
+      result.findings.some((f) => f.checkId === "repo.stripe.webhook" && f.severity === "high"),
+    ).toBe(true);
+    expect(
+      result.findings.some((f) => f.checkId === "repo.api.noauth" && f.severity === "medium"),
+    ).toBe(true);
+    expect(
+      result.findings.some(
+        (f) => f.checkId === "repo.supabase.rls" && f.title.includes("row level security"),
+      ),
+    ).toBe(true);
   });
 
   it("produces no findings for the clean fixture repo", async () => {
     const { github, fetcher } = createFakeGithub({
       "acme/clean-app": { files: cleanRepoFiles },
     });
-    const result = await runRepoScan({ repoUrl: CLEAN_URL, github, fetcher });
+    const result = await runRepoScan({ repoUrl: CLEAN_URL, github, fetcher, osv: CLEAN_OSV.osv });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const nonInfo = result.findings.filter((f) => f.severity !== "info");
     expect(nonInfo).toEqual([]);
-    for (const id of ["repo.env.committed", "repo.secrets.patterns", "repo.quality.basics"]) {
+    for (const id of [
+      "repo.env.committed",
+      "repo.secrets.patterns",
+      "repo.quality.basics",
+      "repo.stripe.webhook",
+      "repo.api.noauth",
+      "repo.supabase.rls",
+    ]) {
       expect(result.findings.some((f) => f.checkId === id)).toBe(false);
     }
   });
@@ -101,6 +135,7 @@ describe("runRepoScan", () => {
       repoUrl: "https://github.com/acme/app",
       github,
       fetcher,
+      osv: CLEAN_OSV.osv,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -116,6 +151,7 @@ describe("runRepoScan", () => {
       repoUrl: "https://github.com/acme/app",
       github,
       fetcher,
+      osv: CLEAN_OSV.osv,
       checks: [],
     });
     expect(result.ok).toBe(true);

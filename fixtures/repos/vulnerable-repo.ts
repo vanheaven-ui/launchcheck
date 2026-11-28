@@ -49,4 +49,60 @@ export const vulnerableRepoFiles: Record<string, string> = {
     "",
   ].join("\n"),
   "src/utils.ts": "export const add = (a: number, b: number) => a + b;\n",
+  // Stripe webhook handler with no constructEvent call.
+  "app/api/webhooks/stripe/route.ts": [
+    'import { NextResponse } from "next/server";',
+    "",
+    "export async function POST(request: Request) {",
+    "  const body = await request.json();",
+    '  if (body.type === "checkout.session.completed") {',
+    "    // fulfill order",
+    "  }",
+    "  return NextResponse.json({ received: true });",
+    "}",
+    "",
+  ].join("\n"),
+  // Next.js route that writes to the db with no auth signal.
+  "app/api/items/route.ts": [
+    'import { db } from "@/lib/db";',
+    'import { items } from "@/lib/schema";',
+    "",
+    "export async function POST(request: Request) {",
+    "  const data = await request.json();",
+    "  await db.insert(items).values(data);",
+    "  return Response.json({ ok: true });",
+    "}",
+    "",
+  ].join("\n"),
+  // SQL migration creating public tables with no RLS and a permissive policy.
+  "supabase/migrations/001_init.sql": [
+    "create table if not exists public.notes (",
+    "  id uuid primary key,",
+    "  body text",
+    ");",
+    "",
+    "create table public.profiles (",
+    "  id uuid primary key,",
+    "  email text",
+    ");",
+    "",
+    "create policy notes_update on notes for update using (true) with check (true);",
+    "",
+  ].join("\n"),
+  // package-lock v3 with an outdated package; the fake OSV client reports
+  // vulnerabilities for it (no real network in tests).
+  "package-lock.json": JSON.stringify(
+    {
+      name: "vuln-app",
+      lockfileVersion: 3,
+      requires: true,
+      packages: {
+        "": { name: "vuln-app" },
+        "node_modules/lodash": { version: "4.17.20" },
+        "node_modules/next": { version: "16.0.0" },
+      },
+    },
+    null,
+    2,
+  ),
 };

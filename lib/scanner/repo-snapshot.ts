@@ -73,8 +73,13 @@ const PRIORITY_DIRS = new Set([
   "supabase",
   "apps",
   "packages",
+  "prisma",
+  "drizzle",
+  "db",
 ]);
 const CONFIG_FILE_RE = /\.(json|toml|ya?ml|sql)$/;
+/** Config/schema files under these roots are always tier 0 regardless of depth. */
+const CONFIG_ROOT_DIRS = new Set(["supabase", "prisma", "drizzle", "db"]);
 
 export type RepoSnapshotOptions = {
   github: GithubClient;
@@ -121,10 +126,11 @@ function priorityTier(path: string): number {
     return 0;
   }
   // Config files are top priority only near the root (<=2 segments) or under
-  // supabase/, so deep locale/data JSON cannot starve application source.
+  // supabase/, prisma/, drizzle/, or db/, so deep locale/data JSON cannot
+  // starve application source.
   if (
     CONFIG_FILE_RE.test(base) &&
-    (segments.length <= 2 || segments[0]?.toLowerCase() === "supabase")
+    (segments.length <= 2 || CONFIG_ROOT_DIRS.has(segments[0]?.toLowerCase() ?? ""))
   ) {
     return 0;
   }
